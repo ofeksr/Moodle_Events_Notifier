@@ -1,0 +1,13 @@
+/.idea
+/moodle_events_notifier/database
+/moodle_events_notifier/logs
+/moodle_events_notifier/credentials.json
+/moodle_events_notifier/moodle_schedule.bat
+/moodle_events_notifier/token.pickle
+/tests/database
+/tests/logs
+/tests/credentials.json
+/tests/token.pickle
+/venv
+/__pycache__
+/moodle_events_notifier/__pycache__
