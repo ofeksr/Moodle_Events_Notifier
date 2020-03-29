@@ -3,7 +3,7 @@
 #### Web Scrap (with selenium) Moodle events needed to be complete and sync them to Google Keep to track your homework progress and never forget about applying tasks on time.
 #### Manage all configurations with simple CLI tool (click library).
 
-#### Decencies:
+#### Dependencies:
 - Selenium Chrome Web driver
 - Redis Database
 - Click (CLI Tool)
