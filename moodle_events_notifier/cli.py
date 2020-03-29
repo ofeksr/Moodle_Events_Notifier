@@ -8,10 +8,7 @@ moodle = None
 def _check_moodle_object():
     global moodle
     if moodle is None:
-        try:
-            moodle = MoodleManager()
-        except Exception:
-            moodle = MoodleManager()
+        moodle = MoodleManager()
 
 
 @click.group()
@@ -22,7 +19,7 @@ def cli():
 
 @cli.command('show_events')
 def show_events():
-    """List all events from JSON database"""
+    """List all events from Redis database"""
     _check_moodle_object()
 
     events = moodle.show_events_from_db()

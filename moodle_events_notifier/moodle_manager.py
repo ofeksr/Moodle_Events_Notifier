@@ -5,8 +5,10 @@ and never forget about applying tasks on time.
 """
 
 import re
+import urllib.parse
 from datetime import datetime, timedelta
 
+import pyshorteners
 import requests
 import yagmail
 from selenium.webdriver import Chrome
@@ -18,39 +20,26 @@ from selenium.webdriver.support.ui import WebDriverWait
 from database import config
 from exceptions import create_logger, WebScrapEvents
 from google_agents import GoogleKeepAgent, GoogleCalendarAgent
-from redis_db import MyRedis, json
+from redis_db import MyRedis
 
 LOG = create_logger()
 
 
+def bitly_link(url: str):
+    token = config.bitly_token
+    s = pyshorteners.Shortener('Bitly', bitly_token=token)
+    bitly_url = s.short(url)
+    return bitly_url
+
+
 def create_gcal_link(date: str, summary: str, description: str) -> str:
     """date format: 20191206/20191207 (year+month+day -> today/next day)"""
-    html_template = '<a href="https://www.google.com/calendar/render?' \
-                    'action=TEMPLATE' \
-                    f'&text={summary}' \
-                    f'&dates={date}' \
-                    f'&details={description}"' \
-                    'target="_blank" rel="nofollow"> Add to Google Calendar </a>'
+    encoded_summary = urllib.parse.quote(summary.encode('utf-8'))
+    g_cal_link = f"https://www.google.com/calendar/render?action=TEMPLATE&text=" \
+                 f"{encoded_summary}&dates={date}&details={description}"
+    href_link = bitly_link(g_cal_link)
+    html_template = f'<a href="{href_link}" target="_blank" rel="nofollow"> <br> Add to Google Calendar </a>'
     return html_template
-
-
-def short_url(url: str) -> str:
-    """
-    For shorter (tiny) url display in google apps.
-    :param url: str - insert the desired url for make him tiny.
-    :return: str
-    """
-    api_url = 'http://tinyurl.com/api-create.php?url='
-    shorter_url = requests.get(api_url + url).content
-    tiny_url = shorter_url.decode()
-
-    if requests.get(tiny_url).status_code != 200:
-        LOG.warning('Failed to get respond from generated tiny url, check input url,\n'
-                    'return input url instead')
-        return url
-
-    else:
-        return tiny_url
 
 
 class MoodleManager:
@@ -69,12 +58,29 @@ class MoodleManager:
         self.g_links_for_weeklies = []  # for email report usage
         # both have same number of items
 
+        self.all_events = []
+
         self.calendar = None
         self.keep = None
 
         LOG.info('MoodleManager object created successfully')
 
-    def get_events(self, username: str, password: str, weekly_report: bool = False) -> tuple:
+    @staticmethod
+    def login_to_moodle(driver, username, password):
+        username_field = driver.find_element_by_id('username')
+        username_field.clear()
+        username_field.send_keys(username)
+
+        password_field = driver.find_element_by_id('password')
+        password_field.clear()
+        password_field.send_keys(password)
+
+        driver.find_element_by_id('loginbtn').click()
+
+        WebDriverWait(driver, 10).until(ec.presence_of_element_located((By.ID, 'instance-283000-header')))
+        LOG.info('Logged in successfully to Moodle Account')
+
+    def get_events(self, username: str, password: str, weekly_report: bool = False, all_events: bool = False):
         """
         Web Scrap events that needed to be done in Moodle website.
         If event not in database it will be update there, and added to self.events_to_add for google keep agent usage.
@@ -93,18 +99,7 @@ class MoodleManager:
             driver.get(url)
             LOG.info('URL opened in web driver')
 
-            username_field = driver.find_element_by_id('username')
-            username_field.clear()
-            username_field.send_keys(username)
-
-            password_field = driver.find_element_by_id('password')
-            password_field.clear()
-            password_field.send_keys(password)
-
-            driver.find_element_by_id('loginbtn').click()
-
-            WebDriverWait(driver, 10).until(ec.presence_of_element_located((By.ID, 'instance-283000-header')))
-            LOG.info('Logged in successfully to Moodle Account')
+            self.login_to_moodle(driver, username, password)
 
             events = driver.find_elements_by_class_name('event')
             for event in events:
@@ -139,10 +134,10 @@ class MoodleManager:
                         if today_check <= event_date <= plus_week:
                             # need to add to weekly report
                             add_to_weekly_flag = True
-                        else:
+                        if not all_events:
                             # not new and no need to add to weekly report
                             continue
-                    else:
+                    if not all_events:
                         # not new and no need to add to weekly report
                         continue
 
@@ -168,9 +163,16 @@ class MoodleManager:
                     '//*[@id="page-header"]/div/div/div[2]/div[1]/div/a/div/div/h1').text
                 driver.switch_to.window(driver.window_handles[0])
 
+                bitly_url = bitly_link(event_link)
+
+                if all_events:
+                    self.all_events.append(f'{subject} - {event.text}: {bitly_url}')
+                    LOG.info(f'Event #{event_id} added to all events email template')
+                    continue
+
                 if add_to_weekly_flag:
                     # add event to weekly event list template
-                    self.weekly_events.append(f'{subject} - {event.text}: {short_url(event_link)}')
+                    self.weekly_events.append(f'{subject} - {event.text}: {bitly_url}')
 
                     # add event to gcal link list for email report
                     date_datetime_f = datetime.strptime(formatted_date, '%Y-%m-%d')
@@ -180,7 +182,7 @@ class MoodleManager:
                         create_gcal_link(
                             date=fixed_date,
                             summary=f'{subject} - {summary}',
-                            description=short_url(event_link)
+                            description=bitly_url
                         )
                     )
 
@@ -192,18 +194,18 @@ class MoodleManager:
                         'subject': subject,
                         'text': summary,
                         'date': formatted_date,
-                        'link': short_url(event_link)
+                        'link': bitly_url
                     }
                     self.db.insert_event(event_id=event_id, event_details=d)
 
                     #  add event to calendar
                     self.events_to_calendar[formatted_date] = {
                         'summary': f'{subject} - {summary}',
-                        'description': short_url(event_link),
+                        'description': bitly_url,
                     }
 
                     #  add event to keep
-                    self.events_to_keep.append(f'{subject} - {event.text}: {short_url(event_link)}')
+                    self.events_to_keep.append(f'{subject} - {event.text}: {bitly_url}')
 
                     # add event to gcal link for email report
                     date_datetime_f = datetime.strptime(formatted_date, '%Y-%m-%d')
@@ -213,7 +215,7 @@ class MoodleManager:
                         create_gcal_link(
                             date=fixed_date,
                             summary=f'{subject} - {summary}',
-                            description=short_url(event_link)
+                            description=bitly_url
                         )
                     )
 
@@ -221,14 +223,14 @@ class MoodleManager:
 
             driver.quit()
             LOG.info(f'New Events={len(self.events_to_keep)}, Weekly Events={len(self.weekly_events)}, '
-                     f'Total Events in Database={self.db.count_events()}')
+                     f'Total Events in Database={self.db.count_events()}, All Events={len(self.all_events)}')
             return self.events_to_keep, self.events_to_calendar
 
         except Exception as e:
             LOG.exception(f'Failed to web scrap for events with web driver')
             raise WebScrapEvents('Failed to web scarp events', e)
 
-    def send_email_report(self, emails: list, weekly_report: bool = False):
+    def send_email_report(self, emails: list, weekly_report: bool = False, all_events: bool = False):
 
         # generate cat photo
         cat_img_link = requests.get('https://api.thecatapi.com/v1/images/search').json()[0]['url']
@@ -255,7 +257,7 @@ class MoodleManager:
                 '<body dir="rtl">'
                 '<br>'
                 '<h2>'
-                'התווסף היום'
+                'התווסף לאחרונה'
                 '</h2>'
                 '<br>'
                 f'{"<br><br>".join([x[0] + x[1] for x in zip(self.events_to_keep, self.g_links_for_today)])}'
@@ -272,13 +274,26 @@ class MoodleManager:
                 '</body>'
             )
 
+        elif all_events and len(self.all_events) > 0:
+            subject = 'דו"ח הגשות איזה כיף'
+            contents.append(
+                '<body dir="rtl">'
+                '<br>'
+                '<h2>'
+                'הגשות לתקופה הקרובה'
+                '</h2>'
+                '<br>'
+                f'{"<br><br>".join([x for x in self.all_events])}'
+                '</body>'
+            )
+
         else:
             subject = 'הגשה חדשה איזה כיף'
             contents.append(
                 '<body dir="rtl">'
                 '<br>'
                 '<h2>'
-                'התווסף היום'
+                'התווסף לאחרונה'
                 '</h2>'
                 '<br>'
                 f'{"<br><br>".join([x[0] + x[1] for x in zip(self.events_to_keep, self.g_links_for_today)])}'
@@ -297,7 +312,7 @@ class MoodleManager:
             f'</body></center>',
         ])
 
-        yag.send(to=emails, subject=subject, contents=contents)
+        yag.send(bcc=emails, subject=subject, contents=contents)
         LOG.info(f'email sent to {emails}')
         return True
 
@@ -359,41 +374,24 @@ class MoodleManager:
         else:
             return self.db.get_all_events()
 
-    @staticmethod
-    def show_email_addresses():
-        with open('database/emails.json') as f:
-            emails_dict = json.load(f)
-            return emails_dict
-
-    @staticmethod
-    def add_email_address(name: str, email_address: str):
-
-        # Read data from the file
-        with open('database/emails.json') as f:
-            emails_dict = json.load(f)
-
-        # Add an item to dict
-        emails_dict[name] = email_address
-
-        # Save data to the file
-        with open('database/emails.json', 'w') as f:
-            json.dump(emails_dict, f, indent=4)
-
-        LOG.info('email address added to config file')
+    def send_email_with_all_events(self, username: str, password: str, emails: list):
+        self.get_events(username, password, all_events=True)
+        self.send_email_report(emails, all_events=True)
+        LOG.info('email with all events sent.')
         return True
 
-    @staticmethod
-    def remove_email_address(name: str):
-        # Read data from the file
-        with open('database/emails.json') as f:
-            emails_dict = json.load(f)
+    def rebuild_db_with_all_events(self, username: str, password: str, list_id: str = None,
+                                   skip_calendar: bool = False):
+        if not list_id:  # for testing usage
+            list_id = config.studies_hw_list_id
 
-        # Add an item to your dict
-        del emails_dict[name]
-
-        # Save data to the file
-        with open('database/emails.json', 'w') as f:
-            json.dump(emails_dict, f, indent=4)
-
-        LOG.info('email address removed from config file')
+        self.db._clean_db()
+        self._check_agent_connection(keep=True)
+        self.keep.delete_list_items(list_id)
+        # TODO need to delete google calendar events manually.
+        self.get_events(username, password)
+        if not skip_calendar:
+            self.insert_event_calendar(schedule=True)
+        self.insert_event_keep(schedule=True, list_id=list_id)
+        self.db.backup_db()
         return True

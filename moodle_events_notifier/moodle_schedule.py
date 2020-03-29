@@ -3,23 +3,29 @@ import time
 
 from database import config
 from exceptions import log_error_to_desktop
-from moodle_manager import MoodleManager, LOG, datetime, json
+from moodle_manager import MoodleManager, LOG, datetime
 
 
-def run_script(weekly_report: bool):
-
+def run_script(weekly_report: bool, all_events_report: bool = False, rebuild_db: bool = False):
     try:
 
-        # load emails list from json file
-        with open('database/emails.json') as f:
-            emails_list = list(json.load(f).values())
-
         moodle = MoodleManager()
+        if rebuild_db:
+            moodle.rebuild_db_with_all_events(username=config.moodle_username, password=config.moodle_password)
+            return True
 
-        moodle.get_events(username=config.moodle_username, password=config.moodle_password, weekly_report=weekly_report)
+        elif all_events_report:
+            moodle.send_email_with_all_events(username=config.moodle_username, password=config.moodle_password,
+                                              emails=moodle.db.get_all_emails(only_addresses=True))
+            return True
+
+        else:
+            moodle.get_events(username=config.moodle_username, password=config.moodle_password,
+                              weekly_report=weekly_report)
 
         if len(moodle.events_to_keep) > 0 or weekly_report:
-            moodle.send_email_report(emails=emails_list, weekly_report=weekly_report)
+            moodle.send_email_report(emails=moodle.db.get_all_emails(only_addresses=True),
+                                     weekly_report=weekly_report)
 
             if len(moodle.events_to_keep) > 0:
                 # add events to google agents
@@ -54,7 +60,6 @@ if __name__ == '__main__':
         LOG.info('Today is Saturday, no need to notify about tasks.')
         exit()
     elif datetime.today().weekday() == 3:
-        run_script(weekly_report=True)
+        run_script(weekly_report=True, all_events_report=False, rebuild_db=False)
     else:
-        run_script(weekly_report=False)
-
+        run_script(weekly_report=False, all_events_report=False, rebuild_db=False)

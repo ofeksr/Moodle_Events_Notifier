@@ -5,6 +5,7 @@ Note:
 """
 
 __version__ = '1.3'
+
 # v1.0 - first stable release
 # v1.1 - added google calendar class
 # v1.2 - added order_list_items_by_date function
@@ -16,7 +17,7 @@ import os
 import pickle
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 
 import gkeepapi
@@ -243,19 +244,43 @@ class GoogleKeepAgent:
         dates_of_items = []
         for item in g_list_items:
             pattern = re.compile(r'\d{1,2}/\d{1,2}/\d{4}')
-            summary = re.findall(pattern, item.text)
-            dates_of_items.append(summary[0])
+            try:
+                item_date = re.findall(pattern, item.text)[0]
+                dates_of_items.append(item_date)
+            except:
+                if 'מחר' in str(item):
+                    item_date = (datetime.today() + timedelta(days=1)).strftime('%d/%m/%Y')
+                    dates_of_items.append(item_date)
+                else:  # if 'היום' in date
+                    item_date = datetime.today().strftime('%d/%m/%Y')
+                    dates_of_items.append(item_date)
 
         # sort dates by date
         dates_to_sort = sorted([datetime.strptime(date, '%d/%m/%Y') for date in dates_of_items])
-        sorted_dates = [date.strftime('%#d/%m/%Y') for date in dates_to_sort]
+        sorted_dates = [date.strftime('%#d/%m/%Y') for date in dates_to_sort]  # the # removes leading zero!
 
         # reposition items in list by sorted dates list
         for item in g_list_items:
             pattern = re.compile(r'\d{1,2}/\d{1,2}/\d{4}')
-            summary = re.findall(pattern, item.text)
-            item.sort = - int(sorted_dates.index(summary[0]))  # put minus (-) for desc order
+            try:
+                item_date = re.findall(pattern, item.text)[0]
+                item.sort = - int(sorted_dates.index(item_date))  # put minus (-) for desc order
+            except:
+                if 'מחר' in str(item):
+                    item_date = (datetime.today() + timedelta(days=1)).strftime('%#d/%m/%Y')
+                    item.sort = - int(sorted_dates.index(item_date))
+                else:  # if 'היום' in date
+                    item_date = datetime.today().strftime('%#d/%m/%Y')
+                    item.sort = - int(sorted_dates.index(item_date))
 
         # sync for saving changes
+        self.keep.sync()
+        return True
+
+    def delete_list_items(self, list_id: str):
+        g_list = self.keep.get(list_id)
+        g_list_items = g_list.items
+        for item in g_list_items:
+            item.delete()
         self.keep.sync()
         return True
